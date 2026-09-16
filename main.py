@@ -2,8 +2,10 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import plotly.express as px
+import plotly.graph_objects as go
 from sklearn.cluster import KMeans
 from sklearn.preprocessing import StandardScaler
+from sklearn.metrics import silhouette_score
 
 # ---------------------------------------------------------
 # 페이지 기본 설정 (제목, 아이콘, 브라우저 탭 제목)
@@ -75,17 +77,130 @@ if len(selected_stats) < 2:
     st.stop()
 
 # ---------------------------------------------------------
-# 묶음 수 선택 (2~6, 기본 3)
-# ---------------------------------------------------------
-n_clusters = st.slider("묶음 수를 선택하세요", min_value=2, max_value=6, value=3)
-
-# ---------------------------------------------------------
-# 표준화 후 K-평균 군집화 (난수 고정)
+# 표준화 (선택한 능력치 기준)
 # ---------------------------------------------------------
 X = df[selected_stats].values
 scaler = StandardScaler()
 X_scaled = scaler.fit_transform(X)
 
+# ---------------------------------------------------------
+# 묶음 수 선택 (2~6, 기본 3)
+# ---------------------------------------------------------
+st.subheader("2. 묶음 수 정하기")
+
+n_clusters = st.slider("묶음 수를 선택하세요", min_value=2, max_value=6, value=3)
+
+# ---------------------------------------------------------
+# 엘보우 방법: 묶음 수 1~7에 대한 이너셔(관성) 계산
+# 이너셔 = 각 점이 자기 묶음 중심에서 떨어진 거리의 제곱을 모두 더한 값
+# ---------------------------------------------------------
+st.subheader("3. 묶음 수에 따른 이너셔(엘보우 방법)")
+
+k_range = list(range(1, 8))
+inertia_list = []
+
+for k in k_range:
+    km = KMeans(n_clusters=k, random_state=42, n_init=10)
+    km.fit(X_scaled)
+    inertia_list.append(km.inertia_)
+
+fig_elbow = go.Figure()
+fig_elbow.add_trace(
+    go.Scatter(
+        x=k_range,
+        y=inertia_list,
+        mode="lines+markers",
+        name="이너셔",
+    )
+)
+# 현재 선택한 묶음 수 위치에 세로선 긋기
+fig_elbow.add_vline(
+    x=n_clusters,
+    line_dash="dash",
+    line_color="red",
+    annotation_text=f"현재 선택: {n_clusters}",
+    annotation_position="top",
+)
+fig_elbow.update_layout(
+    title="묶음 수에 따른 이너셔 변화",
+    xaxis_title="묶음 수",
+    yaxis_title="이너셔 (거리 제곱의 합)",
+    xaxis=dict(tickmode="linear", dtick=1),
+)
+st.plotly_chart(fig_elbow, use_container_width=True)
+
+# ---------------------------------------------------------
+# 묶음 수별 이너셔와 바로 앞 값과의 감소량 표
+# ---------------------------------------------------------
+elbow_rows = []
+prev_inertia = None
+for k, inertia in zip(k_range, inertia_list):
+    if prev_inertia is None:
+        decrease = None
+    else:
+        decrease = round(prev_inertia - inertia, 2)
+    elbow_rows.append(
+        {
+            "묶음 수": k,
+            "이너셔": round(inertia, 2),
+            "바로 앞 값에서 감소량": decrease if decrease is not None else "",
+        }
+    )
+    prev_inertia = inertia
+
+elbow_df = pd.DataFrame(elbow_rows)
+st.dataframe(elbow_df, use_container_width=True)
+
+# ---------------------------------------------------------
+# 실루엣 점수: 묶음 수 2~7
+# ---------------------------------------------------------
+st.subheader("4. 묶음 수에 따른 실루엣 점수")
+
+sil_k_range = list(range(2, 8))
+sil_scores = []
+
+for k in sil_k_range:
+    km = KMeans(n_clusters=k, random_state=42, n_init=10)
+    labels_tmp = km.fit_predict(X_scaled)
+    score = silhouette_score(X_scaled, labels_tmp)
+    sil_scores.append(score)
+
+fig_sil = go.Figure()
+fig_sil.add_trace(
+    go.Scatter(
+        x=sil_k_range,
+        y=sil_scores,
+        mode="lines+markers",
+        name="실루엣 점수",
+        line=dict(color="green"),
+    )
+)
+fig_sil.add_vline(
+    x=n_clusters,
+    line_dash="dash",
+    line_color="red",
+    annotation_text=f"현재 선택: {n_clusters}",
+    annotation_position="top",
+)
+fig_sil.update_layout(
+    title="묶음 수에 따른 실루엣 점수 변화",
+    xaxis_title="묶음 수",
+    yaxis_title="실루엣 점수",
+    xaxis=dict(tickmode="linear", dtick=1),
+)
+st.plotly_chart(fig_sil, use_container_width=True)
+
+sil_df = pd.DataFrame(
+    {
+        "묶음 수": sil_k_range,
+        "실루엣 점수": [round(s, 4) for s in sil_scores],
+    }
+)
+st.dataframe(sil_df, use_container_width=True)
+
+# ---------------------------------------------------------
+# 실제 군집화 (현재 선택한 묶음 수로 K-평균, 난수 고정)
+# ---------------------------------------------------------
 kmeans = KMeans(n_clusters=n_clusters, random_state=42, n_init=10)
 raw_labels = kmeans.fit_predict(X_scaled)
 df["cluster_raw"] = raw_labels
@@ -109,7 +224,7 @@ df["cluster"] = df["cluster_raw"].map(cluster_label_map)
 # ---------------------------------------------------------
 # 2차원 산점도
 # ---------------------------------------------------------
-st.subheader("2. 2차원 산점도")
+st.subheader("5. 2차원 산점도")
 
 col1, col2 = st.columns(2)
 with col1:
@@ -148,7 +263,7 @@ st.plotly_chart(fig_2d, use_container_width=True)
 # ---------------------------------------------------------
 # 3차원 산점도 (선택 능력치가 3개 이상일 때만)
 # ---------------------------------------------------------
-st.subheader("3. 3차원 산점도")
+st.subheader("6. 3차원 산점도")
 
 if len(selected_stats) < 3:
     st.info("3차원 산점도를 보려면 능력치를 3개 이상 선택해주세요.")
@@ -202,7 +317,7 @@ else:
 # ---------------------------------------------------------
 # 묶음별 인원과 여섯 능력치 평균
 # ---------------------------------------------------------
-st.subheader("4. 묶음별 인원과 능력치 평균")
+st.subheader("7. 묶음별 인원과 능력치 평균")
 
 summary_rows = []
 for label in label_names:
@@ -220,7 +335,7 @@ st.dataframe(summary_df, use_container_width=True)
 # ---------------------------------------------------------
 # 묶음별 종합 능력치(overall) 상위 5명 (한글 이름)
 # ---------------------------------------------------------
-st.subheader("5. 묶음별 종합 능력치 상위 5명")
+st.subheader("8. 묶음별 종합 능력치 상위 5명")
 
 for label in label_names:
     sub = df[df["cluster"] == label].sort_values("overall", ascending=False)
@@ -232,7 +347,7 @@ for label in label_names:
 # ---------------------------------------------------------
 # 묶음과 포지션 교차표
 # ---------------------------------------------------------
-st.subheader("6. 묶음과 포지션 교차표")
+st.subheader("9. 묶음과 포지션 교차표")
 
 cross_tab = pd.crosstab(df["cluster"], df["position_group"])
 # 묶음 순서를 label_names 순서대로 정렬
